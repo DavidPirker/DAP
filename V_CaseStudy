@@ -1,0 +1,208 @@
+# -*- coding: utf-8 -*-
+"""
+@author: david
+"""
+
+# Objectives: the fund converts its investment into EUR or GBP according to the Spot rate.
+# The first task is to convert the invested value into the respective currency on any given user input date.
+# This is an in-sample test where we can directly compare the performance of the currency to the forecest using the Monte Carlo Sim, the IRR differential is then the IRR at risk which should be hedged.
+# Volatility as well as the expected return must have the right input value in order to get a realistic MonteCarlo Sim.
+# The vol can be derived from the implied volatility, the mean return can depend on the user input and is hardcoded in the script below.
+# The Monte Carlo Sim then models the expected price path of the fund (converted into another currency) from the start date.
+# There is no FX exposure for the USD investment.
+# The next step would be to include the forwards and swaps into the model.
+
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import math
+#from scipy.stats import norm
+import datetime
+
+#%% setup of variables
+#Assuming a 9bn USD fund
+USDfundNAV = 3000000 # in USD
+EURfundNAV = 3000000 # in USD
+GBPfundNAV = 3000000 # in USD
+
+ret_window = 1
+ret = 1
+days_in_year = 365.25
+T = 252 # business days
+normalize = 0 #binary, yes=1, 0=no
+normalized_fund = 1000
+
+# dates when the fund buys/sells
+buy_date = '2000-01-05'
+sell_date = '2018-12-11'
+
+#%% data input
+path = 'D:\Validus\CaseStudy'
+file = 'market_data_2019.04.10.xlsx'
+sheet = 'Data_Values'
+df = pd.read_excel(path+'\\'+file, sheet)
+
+#%% spot fx 
+df_spot = df
+
+#%% cleaning spot fx table
+df_spot = df_spot.drop(df_spot.columns[[0]], axis=1) # drop first column
+df_spot = df_spot.ix[:, 'Unnamed: 1':'Spot.2'] #drop other columns
+df_spot = df_spot.drop([0,1,2,4,5]) # drop rows
+df_spot.columns = df_spot.iloc[0] # set new header
+df_spot = df_spot.drop([3]) # drop row
+df_spot = df_spot.rename(columns={'BBG Ticker': 'dates'}) #rename column
+df_spot = df_spot.set_index('dates') #set new index
+df_spot.fillna(method='bfill', inplace=True) #replace values which were not refreshed
+
+
+#%%
+df_spotreturns = df_spot.pct_change(ret) #spot returns
+df_spot_sell = 1 / df_spot #reverse fx rate
+
+#%%model input
+T = datetime.datetime.strptime(sell_date, '%Y-%m-%d') - datetime.datetime.strptime(buy_date, '%Y-%m-%d')
+print(T.days)
+
+#%% fund model
+df_Fund = pd.DataFrame(columns=['EUR Investment in USD', 'GBP Investment in USD'], index=df_spot.index)
+df_Fund = df_Fund.truncate(before=buy_date, after=sell_date)
+df_Fund['EUR Investment in USD'] = EURfundNAV / df_spot['EURUSD BGN Curncy']
+df_Fund['GBP Investment in USD'] = GBPfundNAV / df_spot['GBPUSD BGN Curncy']
+
+#%%
+df_Fund_returns = df_Fund.pct_change(ret)
+
+if normalize == 1:
+    df_Fund = normalized_fund * (1+df_Fund_returns).cumprod()
+    df_Fund[:1] = normalized_fund
+else:
+    pass
+
+#plot fund
+plt.figure('Fund Investments with FX exposure')
+plt.title('Fund Investments with FX exposure')
+plt.plot(df_Fund)
+plt.legend(df_Fund.columns, loc='upper lef')
+plt.show()
+
+#%% IRR
+days = (df_Fund.index[-1] - df_Fund.index[0]).days #get numb of days
+
+for i in df_Fund:
+    try:
+        #return
+        Total_ret = df_Fund.get_value(df_Fund[i].last_valid_index(), i) / next(x for x in df_Fund[i] if not np.isnan(x))-1
+        print('Total return ',i,': ',"{0:.0%}".format(Total_ret))
+        
+        #IRR
+        IRR = (df_Fund.get_value(df_Fund[i].last_valid_index(), i) / next(x for x in df_Fund[i] if not np.isnan(x)))**(days_in_year/days)-1
+        print('IRR',i,':',"{0:.0%}".format(IRR))
+    except:
+        pass
+#%%
+result = [] 
+#%% Monte Carlo #%%######## EUR #########     
+mean_ret = 0.10 #expected return
+vol = 0.2 #Volatility, implied vol can be derived from Options, this is an assumption.
+
+num_iterations = 1000 # Number of iterations
+
+for i in range(num_iterations):
+    ret_d = np.random.normal(mean_ret/T.days, vol/math.sqrt(T.days),T.days)+1
+    #creates list of daily returns using random normal distribution
+
+    #set starting price and create price series with random generated returns
+    price_list = [df_Fund.iloc[0,0]]
+        
+    for x in ret_d:
+        price_list.append(price_list[-1] * x)
+    
+    #plot iterations
+    plt.plot(price_list)
+    
+    #append last value of each sim to empty list
+    result.append(price_list[-1])
+
+print("price at start: ",df_Fund.iloc[0,0])
+
+#show plots
+plt.show()
+
+#histogram
+plt.hist(result,bins=100)
+plt.show()
+
+# compute mean of result
+print(round(np.mean(result),4))
+
+# show 95th and 99th quantiles
+print("95% quantile =",np.percentile(result,95))
+print("99% quantile =",np.percentile(result,99))
+
+#using the result from the 99th quantile to calculate return and IRR
+Total_ret_EUR = np.percentile(result,99) / df_Fund.iloc[0,0] -1
+print('Total return : ',"{0:.0%}".format(Total_ret_EUR))
+        
+#IRR
+IRR_EUR = (np.percentile(result,99) / df_Fund.iloc[0,0])**(days_in_year/days)-1
+print('EUR IRR: ',"{0:.0%}".format(IRR_EUR))
+
+#In an in-sample test the IRR at risk would then be the differential between the realized IRR and the forecasted IRR
+
+#Same procedure for GBP now:
+
+#%% Monte Carlo #%%######## GBP #########     
+mean_ret = 0.15 #expected return
+vol = 0.2 #Volatility, implied vol can be derived from Options, this is an assumption.
+
+num_iterations = 1000 # Number of iterations
+
+for i in range(num_iterations):
+    ret_d = np.random.normal(mean_ret/T.days, vol/math.sqrt(T.days),T.days)+1
+    #creates list of daily returns using random normal distribution
+
+    #set starting price and create price series with random generated returns
+    price_list = [df_Fund.iloc[0,1]]
+        
+    for x in ret_d:
+        price_list.append(price_list[-1] * x)
+    
+    #plot iterations
+    plt.plot(price_list)
+    
+    #append last value of each sim to empty list
+    result.append(price_list[-1])
+
+print("price at start: ",df_Fund.iloc[0,1])
+
+#show plots
+plt.show()
+
+#histogram
+plt.hist(result,bins=100)
+plt.show()
+
+# compute mean of result
+print(round(np.mean(result),4))
+
+# show 95th and 99th quantiles
+print("95% quantile =",np.percentile(result,95))
+print("99% quantile =",np.percentile(result,99))
+
+#using the result from the 99th quantile to calculate return and IRR
+Total_ret_GBP = np.percentile(result,99) / df_Fund.iloc[0,1] -1
+print('Total return : ',"{0:.0%}".format(Total_ret_GBP))
+        
+#IRR
+IRR_GBP = (np.percentile(result,99) / df_Fund.iloc[0,1])**(days_in_year/days)-1
+print('GBP IRR: ',"{0:.0%}".format(IRR_GBP))
+
+#In an in-sample test the IRR at risk would then be the differential between the realized IRR and the forecasted IRR
+
+
+
+
+
